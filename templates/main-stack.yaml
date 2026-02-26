@@ -1,239 +1,166 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Agent Core Runtime Main Stack'
+Description: 'KYC Main Stack - DynamoDB cases, SQS queue, Lambda triggered on KYC initiation'
 
 Parameters:
-  ImageTag:
+  AgentArn:
     Type: String
-    Default: 'latest'
-    Description: Docker image tag
-  
-  AgentName:
-    Type: String
-    Default: 'basic_agent'
-    Description: Name of the agent
+    Description: ARN of the Bedrock Agent (passed to Lambda as AGENT_ARN environment variable)
 
-  RolesStackName:
-    Type: String
-    Description: Name of the roles stack to import IAM roles from
-
-  VpcStackName:
-    Type: String
-    Description: Name of the VPC stack to import network resources from
-
-  SourceBucketName:
-    Type: String
-    Description: Name of the S3 bucket containing agent source code
-
-  SourceZipKey:
-    Type: String
-    Default: 'agent-source.zip'
-    Description: S3 key for the agent source zip file
+  KycLambdaTimeout:
+    Type: Number
+    Default: 60
+    Description: Lambda timeout in seconds
+    MinValue: 10
+    MaxValue: 900
 
 Resources:
-  AgentRuntimeSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
+  # DynamoDB table for KYC cases - CaseId as primary key
+  KycCasesTable:
+    Type: AWS::DynamoDB::Table
     Properties:
-      GroupDescription: Security group for Agent Runtime
-      VpcId: !ImportValue
-        Fn::Sub: "${VpcStackName}-VpcId"
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
+      TableName: !Sub "${AWS::StackName}-kyc-cases"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: CaseId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: CaseId
+          KeyType: HASH
       Tags:
         - Key: Name
-          Value: !Sub "${AWS::StackName}-agent-runtime-sg"
+          Value: !Sub "${AWS::StackName}-kyc-cases"
 
-  ECRRepository:
-    Type: AWS::ECR::Repository
+  # SQS queue - middleware/FastAPI publishes here when KYC is initiated
+  KycInitiatedQueue:
+    Type: AWS::SQS::Queue
     Properties:
-      RepositoryName: !Sub "${AWS::StackName}-basic-agent"
-      EmptyOnDelete: true
-      ImageScanningConfiguration:
-        ScanOnPush: true
-      LifecyclePolicy:
-        LifecyclePolicyText: |
-          {
-            "rules": [{
-              "rulePriority": 1,
-              "description": "Keep last 5 images",
-              "selection": {
-                "tagStatus": "any",
-                "countType": "imageCountMoreThan",
-                "countNumber": 5
-              },
-              "action": { "type": "expire" }
-            }]
-          }
+      QueueName: !Sub "${AWS::StackName}-kyc-initiated"
+      VisibilityTimeout: 120
+      MessageRetentionPeriod: 345600
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-kyc-initiated"
 
-  CodeBuildTriggerFunction:
+  # Lambda execution role for KYC processor
+  KycLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-kyc-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  KycLambdaSqsDynamoPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: KycLambdaSqsDynamoPolicy
+      Roles:
+        - !Ref KycLambdaRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: SqsConsume
+            Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+              - sqs:ChangeMessageVisibility
+            Resource: !GetAtt KycInitiatedQueue.Arn
+          - Sid: DynamoDBAccess
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+              - dynamodb:Query
+              - dynamodb:BatchGetItem
+            Resource:
+              - !GetAtt KycCasesTable.Arn
+              - !Sub "${KycCasesTable.Arn}/index/*"
+
+  # Lambda triggered by SQS when KYC is initiated
+  KycProcessorFunction:
     Type: AWS::Lambda::Function
+    DependsOn:
+      - KycLambdaSqsDynamoPolicy
     Properties:
-      FunctionName: !Sub "${AWS::StackName}-codebuild-trigger"
+      FunctionName: !Sub "${AWS::StackName}-kyc-processor"
       Runtime: python3.11
       Handler: index.handler
-      Role: !ImportValue
-        Fn::Sub: "${RolesStackName}-LambdaExecutionRoleArn"
-      Timeout: 900
+      Role: !GetAtt KycLambdaRole.Arn
+      Timeout: !Ref KycLambdaTimeout
+      Environment:
+        Variables:
+          AGENT_ARN: !Ref AgentArn
+          KYC_CASES_TABLE: !Ref KycCasesTable
       Code:
         ZipFile: |
-          import boto3
-          import cfnresponse
+          import json
+          import os
           import logging
-          import time
+          import boto3
 
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
-          codebuild = boto3.client('codebuild')
+          dynamodb = boto3.resource('dynamodb')
 
           def handler(event, context):
-              logger.info('Event: %s', event)
-              request_type = event['RequestType']
+              agent_arn = os.environ.get('AGENT_ARN')
+              table_name = os.environ.get('KYC_CASES_TABLE')
+              logger.info('AGENT_ARN=%s KYC_CASES_TABLE=%s', agent_arn, table_name)
+              for record in event.get('Records', []):
+                  try:
+                      body = json.loads(record.get('body', '{}'))
+                      case_id = body.get('caseId')
+                      logger.info('Processing KYC for caseId=%s', case_id)
+                      # TODO: invoke agent, update DynamoDB case status
+                  except Exception as e:
+                      logger.exception('Error processing record: %s', e)
+                      raise
+              return {'statusCode': 200}
 
-              try:
-                  if request_type == 'Delete':
-                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
-                      return
-
-                  if request_type in ['Create', 'Update']:
-                      project_name = event['ResourceProperties']['ProjectName']
-                      wait_for_completion = event['ResourceProperties'].get('WaitForCompletion', 'false').lower() == 'true'
-
-                      logger.info(f'Starting build for project: {project_name}')
-                      response = codebuild.start_build(projectName=project_name)
-                      build_id = response['build']['id']
-                      logger.info(f'Build started: {build_id}')
-
-                      if not wait_for_completion:
-                          cfnresponse.send(event, context, cfnresponse.SUCCESS, {'BuildId': build_id})
-                          return
-
-                      max_wait_time = 900
-                      start_time = time.time()
-
-                      while time.time() - start_time < max_wait_time:
-                          build_response = codebuild.batch_get_builds(ids=[build_id])
-                          build_status = build_response['builds'][0]['buildStatus']
-
-                          if build_status == 'SUCCEEDED':
-                              logger.info(f'Build {build_id} succeeded')
-                              cfnresponse.send(event, context, cfnresponse.SUCCESS, {'BuildId': build_id})
-                              return
-                          elif build_status in ['FAILED', 'FAULT', 'STOPPED', 'TIMED_OUT']:
-                              error_message = f"Build {build_id} failed with status: {build_status}"
-                              logger.error(error_message)
-
-                              try:
-                                  logs_info = build_response['builds'][0].get('logs', {})
-                                  if logs_info.get('groupName') and logs_info.get('streamName'):
-                                      logger.info(f"Build logs available in CloudWatch")
-                              except Exception as log_error:
-                                  logger.warning(f"Could not get log information: {log_error}")
-
-                              cfnresponse.send(event, context, cfnresponse.FAILED, {
-                                  'Error': error_message,
-                                  'BuildId': build_id
-                              })
-                              return
-
-                          logger.info(f"Build {build_id} status: {build_status}")
-                          time.sleep(30)
-
-              except Exception as e:
-                  logger.error('Error: %s', str(e))
-                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
-
-  AgentImageBuildProject:
-    Type: AWS::CodeBuild::Project
+  # Event source mapping - Lambda is triggered by SQS messages
+  KycProcessorEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
     Properties:
-      Name: !Sub "${AWS::StackName}-agent-build"
-      Description: !Sub "Build agent Docker image for ${AWS::StackName}"
-      ServiceRole: !ImportValue
-        Fn::Sub: "${RolesStackName}-CodeBuildRoleArn"
-      Artifacts:
-        Type: NO_ARTIFACTS
-      Environment:
-        Type: ARM_CONTAINER
-        ComputeType: BUILD_GENERAL1_LARGE
-        Image: aws/codebuild/amazonlinux2-aarch64-standard:3.0
-        PrivilegedMode: true
-        EnvironmentVariables:
-          - Name: AWS_DEFAULT_REGION
-            Value: !Ref AWS::Region
-          - Name: AWS_ACCOUNT_ID
-            Value: !Ref AWS::AccountId
-          - Name: IMAGE_REPO_NAME
-            Value: !Ref ECRRepository
-          - Name: IMAGE_TAG
-            Value: !Ref ImageTag
-          - Name: SOURCE_BUCKET
-            Value: !Ref SourceBucketName
-      Source:
-        Type: S3
-        Location: !Sub "${SourceBucketName}/${SourceZipKey}"
-        BuildSpec: |
-          version: 0.2
-          phases:
-            pre_build:
-              commands:
-                - echo Logging in to Amazon ECR...
-                - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
-            build:
-              commands:
-                - echo Build started on `date`
-                - echo Building Docker image...
-                - docker build -t $IMAGE_REPO_NAME:$IMAGE_TAG .
-                - docker tag $IMAGE_REPO_NAME:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
-            post_build:
-              commands:
-                - echo Build completed on `date`
-                - echo Pushing the Docker image...
-                - docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com/$IMAGE_REPO_NAME:$IMAGE_TAG
-                - echo ARM64 Docker image pushed successfully
-
-  TriggerImageBuild:
-    Type: Custom::CodeBuildTrigger
-    DependsOn:
-      - ECRRepository
-      - AgentImageBuildProject
-      - CodeBuildTriggerFunction
-    Properties:
-      ServiceToken: !GetAtt CodeBuildTriggerFunction.Arn
-      ProjectName: !Ref AgentImageBuildProject
-      WaitForCompletion: "true"
-
-  AgentRuntime:
-    Type: AWS::BedrockAgentCore::Runtime
-    DependsOn:
-      - TriggerImageBuild
-    Properties:
-      AgentRuntimeName: !Sub
-        - "${StackNameUnderscore}_${AgentName}"
-        - StackNameUnderscore: !Join ["_", !Split ["-", !Ref "AWS::StackName"]]
-      AgentRuntimeArtifact:
-        ContainerConfiguration:
-          ContainerUri: !Sub "${ECRRepository.RepositoryUri}:${ImageTag}"
-      RoleArn: !ImportValue
-        Fn::Sub: "${RolesStackName}-AgentExecutionRoleArn"
-      NetworkConfiguration:
-        NetworkMode: VPC
-        NetworkModeConfig:
-          Subnets: !Split
-            - ','
-            - !ImportValue
-                Fn::Sub: '${VpcStackName}-PrivateSubnetIds'
-          SecurityGroups:
-            - !Ref AgentRuntimeSecurityGroup
-      Description: !Sub "Basic agent runtime for ${AWS::StackName}"
+      EventSourceArn: !GetAtt KycInitiatedQueue.Arn
+      FunctionName: !Ref KycProcessorFunction
+      BatchSize: 10
 
 Outputs:
-  AgentRuntimeId:
-    Description: ID of the created agent runtime
-    Value: !GetAtt AgentRuntime.AgentRuntimeId
+  KycCasesTableName:
+    Description: DynamoDB table name for KYC cases (CaseId primary key)
+    Value: !Ref KycCasesTable
     Export:
-      Name: !Sub "${AWS::StackName}-AgentRuntimeId"
+      Name: !Sub "${AWS::StackName}-KycCasesTableName"
 
-  ECRRepositoryUri:
-    Description: URI of the ECR repository
-    Value: !GetAtt ECRRepository.RepositoryUri
+  KycCasesTableArn:
+    Description: ARN of the KYC cases DynamoDB table
+    Value: !GetAtt KycCasesTable.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-ECRRepositoryUri"
+      Name: !Sub "${AWS::StackName}-KycCasesTableArn"
+
+  KycInitiatedQueueUrl:
+    Description: SQS queue URL for middleware/FastAPI to publish when KYC is initiated
+    Value: !Ref KycInitiatedQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-KycInitiatedQueueUrl"
+
+  KycInitiatedQueueArn:
+    Description: ARN of the KYC initiated SQS queue
+    Value: !GetAtt KycInitiatedQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-KycInitiatedQueueArn"
+
+  KycProcessorFunctionArn:
+    Description: ARN of the KYC processor Lambda (triggered by SQS, has AGENT_ARN env var)
+    Value: !GetAtt KycProcessorFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-KycProcessorFunctionArn"
