@@ -6,6 +6,18 @@ Parameters:
     Type: String
     Description: ARN of the Bedrock Agent (passed to Lambda as AGENT_ARN environment variable)
 
+  StorageStackName:
+    Type: String
+    Description: Name of the storage stack (for importing S3 bucket and DynamoDB table)
+
+  LambdaSourceBucket:
+    Type: String
+    Description: S3 bucket containing the KYC processor Lambda deployment package
+
+  LambdaSourceKey:
+    Type: String
+    Description: S3 key for the KYC processor Lambda zip file
+
   KycLambdaTimeout:
     Type: Number
     Default: 60
@@ -14,22 +26,6 @@ Parameters:
     MaxValue: 900
 
 Resources:
-  # DynamoDB table for KYC cases - CaseId as primary key
-  KycCasesTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      TableName: !Sub "${AWS::StackName}-kyc-cases"
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: CaseId
-          AttributeType: S
-      KeySchema:
-        - AttributeName: CaseId
-          KeyType: HASH
-      Tags:
-        - Key: Name
-          Value: !Sub "${AWS::StackName}-kyc-cases"
-
   # SQS queue - middleware/FastAPI publishes here when KYC is initiated
   KycInitiatedQueue:
     Type: AWS::SQS::Queue
@@ -81,9 +77,12 @@ Resources:
               - dynamodb:UpdateItem
               - dynamodb:Query
               - dynamodb:BatchGetItem
-            Resource:
-              - !GetAtt KycCasesTable.Arn
-              - !Sub "${KycCasesTable.Arn}/index/*"
+            Resource: !ImportValue
+              Fn::Sub: "${StorageStackName}-KycCasesTableArn"
+          - Sid: InvokeAgentRuntime
+            Effect: Allow
+            Action: bedrock-agentcore:InvokeAgentRuntime
+            Resource: !Ref AgentArn
 
   # Lambda triggered by SQS when KYC is initiated
   KycProcessorFunction:
@@ -93,38 +92,17 @@ Resources:
     Properties:
       FunctionName: !Sub "${AWS::StackName}-kyc-processor"
       Runtime: python3.11
-      Handler: index.handler
+      Handler: kyc-processor.handler
       Role: !GetAtt KycLambdaRole.Arn
       Timeout: !Ref KycLambdaTimeout
       Environment:
         Variables:
           AGENT_ARN: !Ref AgentArn
-          KYC_CASES_TABLE: !Ref KycCasesTable
+          KYC_CASES_TABLE: !ImportValue
+            Fn::Sub: "${StorageStackName}-KycCasesTableName"
       Code:
-        ZipFile: |
-          import json
-          import os
-          import logging
-          import boto3
-
-          logger = logging.getLogger()
-          logger.setLevel(logging.INFO)
-          dynamodb = boto3.resource('dynamodb')
-
-          def handler(event, context):
-              agent_arn = os.environ.get('AGENT_ARN')
-              table_name = os.environ.get('KYC_CASES_TABLE')
-              logger.info('AGENT_ARN=%s KYC_CASES_TABLE=%s', agent_arn, table_name)
-              for record in event.get('Records', []):
-                  try:
-                      body = json.loads(record.get('body', '{}'))
-                      case_id = body.get('caseId')
-                      logger.info('Processing KYC for caseId=%s', case_id)
-                      # TODO: invoke agent, update DynamoDB case status
-                  except Exception as e:
-                      logger.exception('Error processing record: %s', e)
-                      raise
-              return {'statusCode': 200}
+        S3Bucket: !Ref LambdaSourceBucket
+        S3Key: !Ref LambdaSourceKey
 
   # Event source mapping - Lambda is triggered by SQS messages
   KycProcessorEventSourceMapping:
@@ -135,18 +113,6 @@ Resources:
       BatchSize: 10
 
 Outputs:
-  KycCasesTableName:
-    Description: DynamoDB table name for KYC cases (CaseId primary key)
-    Value: !Ref KycCasesTable
-    Export:
-      Name: !Sub "${AWS::StackName}-KycCasesTableName"
-
-  KycCasesTableArn:
-    Description: ARN of the KYC cases DynamoDB table
-    Value: !GetAtt KycCasesTable.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-KycCasesTableArn"
-
   KycInitiatedQueueUrl:
     Description: SQS queue URL for middleware/FastAPI to publish when KYC is initiated
     Value: !Ref KycInitiatedQueue
