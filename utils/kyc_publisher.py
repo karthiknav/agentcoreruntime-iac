@@ -35,15 +35,7 @@ DUMMY_RECORD: dict[str, Any] = {
         "fullName": "Vijay Mallya",
         "dateOfBirth": "1990-07-13",
         "nationality": "IN",
-    },
-    "documentVerification": {
-        "status": "OK",
-        "updatedAt": "2026-02-26T02:10:00Z",
-        "detailsS3": {
-            "bucket": "kyc-results",
-            "key": "cases/01HR9B5J7Z6J7PD5B6PKQJ2MM4/doc-verification.json",
-        },
-    },
+    }
 }
 
 # Fields to omit from the stored/published case record

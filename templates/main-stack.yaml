@@ -1,29 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'KYC Main Stack - DynamoDB cases, SQS queue, Lambda triggered on KYC initiation'
+Description: 'KYC Main Stack - SQS queue'
 
-Parameters:
-  AgentArn:
-    Type: String
-    Description: ARN of the Bedrock Agent (passed to Lambda as AGENT_ARN environment variable)
-
-  StorageStackName:
-    Type: String
-    Description: Name of the storage stack (for importing S3 bucket and DynamoDB table)
-
-  LambdaSourceBucket:
-    Type: String
-    Description: S3 bucket containing the KYC processor Lambda deployment package
-
-  LambdaSourceKey:
-    Type: String
-    Description: S3 key for the KYC processor Lambda zip file
-
-  KycLambdaTimeout:
-    Type: Number
-    Default: 60
-    Description: Lambda timeout in seconds
-    MinValue: 10
-    MaxValue: 900
 
 Resources:
   # SQS queue - middleware/FastAPI publishes here when KYC is initiated
@@ -37,81 +14,6 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-kyc-initiated"
 
-  # Lambda execution role for KYC processor
-  KycLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${AWS::StackName}-kyc-lambda-role"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-
-  KycLambdaSqsDynamoPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: KycLambdaSqsDynamoPolicy
-      Roles:
-        - !Ref KycLambdaRole
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: SqsConsume
-            Effect: Allow
-            Action:
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:GetQueueAttributes
-              - sqs:ChangeMessageVisibility
-            Resource: !GetAtt KycInitiatedQueue.Arn
-          - Sid: DynamoDBAccess
-            Effect: Allow
-            Action:
-              - dynamodb:GetItem
-              - dynamodb:PutItem
-              - dynamodb:UpdateItem
-              - dynamodb:Query
-              - dynamodb:BatchGetItem
-            Resource: !ImportValue
-              Fn::Sub: "${StorageStackName}-KycCasesTableArn"
-          - Sid: InvokeAgentRuntime
-            Effect: Allow
-            Action: bedrock-agentcore:InvokeAgentRuntime
-            Resource: !Ref AgentArn
-
-  # Lambda triggered by SQS when KYC is initiated
-  KycProcessorFunction:
-    Type: AWS::Lambda::Function
-    DependsOn:
-      - KycLambdaSqsDynamoPolicy
-    Properties:
-      FunctionName: !Sub "${AWS::StackName}-kyc-processor"
-      Runtime: python3.11
-      Handler: kyc-processor.handler
-      Role: !GetAtt KycLambdaRole.Arn
-      Timeout: !Ref KycLambdaTimeout
-      Environment:
-        Variables:
-          AGENT_ARN: !Ref AgentArn
-          KYC_CASES_TABLE: !ImportValue
-            Fn::Sub: "${StorageStackName}-KycCasesTableName"
-      Code:
-        S3Bucket: !Ref LambdaSourceBucket
-        S3Key: !Ref LambdaSourceKey
-
-  # Event source mapping - Lambda is triggered by SQS messages
-  KycProcessorEventSourceMapping:
-    Type: AWS::Lambda::EventSourceMapping
-    Properties:
-      EventSourceArn: !GetAtt KycInitiatedQueue.Arn
-      FunctionName: !Ref KycProcessorFunction
-      BatchSize: 10
-
 Outputs:
   KycInitiatedQueueUrl:
     Description: SQS queue URL for middleware/FastAPI to publish when KYC is initiated
@@ -124,9 +26,3 @@ Outputs:
     Value: !GetAtt KycInitiatedQueue.Arn
     Export:
       Name: !Sub "${AWS::StackName}-KycInitiatedQueueArn"
-
-  KycProcessorFunctionArn:
-    Description: ARN of the KYC processor Lambda (triggered by SQS, has AGENT_ARN env var)
-    Value: !GetAtt KycProcessorFunction.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-KycProcessorFunctionArn"
