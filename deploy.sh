@@ -53,36 +53,7 @@ SOURCE_BUCKET=$(aws cloudformation describe-stacks \
     --region "$REGION")
 echo "Source bucket: $SOURCE_BUCKET"
 
-# Package and upload KYC processor Lambda (install deps from requirements.txt, then zip)
-# echo ""
-# echo "[3/5] Packaging and uploading KYC processor Lambda..."
-# TIMESTAMP=$(date +%s)
-# KYC_LAMBDA_ZIP_KEY="kyc-processor-${TIMESTAMP}.zip"
-# KYC_LAMBDA_DIR="lambda"
-# PACKAGE_DIR="${KYC_LAMBDA_DIR}/package"
-# rm -rf "$PACKAGE_DIR"
-# mkdir -p "$PACKAGE_DIR"
-# pip install -r "${KYC_LAMBDA_DIR}/requirements.txt" -t "$PACKAGE_DIR" --quiet --upgrade
-# cp "${KYC_LAMBDA_DIR}/kyc-processor.py" "$PACKAGE_DIR/"
-# python -c "
-# import zipfile, os
-# pkg = '$PACKAGE_DIR'
-# out = '$KYC_LAMBDA_ZIP_KEY'
-# with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as zf:
-#     for root, dirs, files in os.walk(pkg):
-#         dirs[:] = [d for d in dirs if d != '__pycache__' and d != '.git']
-#         for f in files:
-#             if f.endswith('.pyc'): continue
-#             path = os.path.join(root, f)
-#             arcname = os.path.relpath(path, pkg)
-#             zf.write(path, arcname)
-# "
-# rm -rf "$PACKAGE_DIR"
-# aws s3 cp "$KYC_LAMBDA_ZIP_KEY" "s3://$SOURCE_BUCKET/$KYC_LAMBDA_ZIP_KEY" --region "$REGION"
-# rm "$KYC_LAMBDA_ZIP_KEY"
-# echo "✓ KYC processor Lambda uploaded: $KYC_LAMBDA_ZIP_KEY"
-
-# Deploy roles stack (optional for KYC; kept for compatibility)
+# Deploy roles stack 
 echo ""
 echo "[4/5] Deploying roles stack..."
 aws cloudformation deploy \
