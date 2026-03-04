@@ -257,6 +257,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:Query
                   - dynamodb:BatchGetItem
+                  - dynamodb:Scan
                 Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/kyc*"
               - Sid: InvokeAgentRuntime
                 Effect: Allow
