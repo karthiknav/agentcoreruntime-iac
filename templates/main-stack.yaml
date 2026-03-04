@@ -15,6 +15,12 @@ Resources:
           Value: !Sub "${AWS::StackName}-kyc-initiated"
 
 Outputs:
+  KycInitiatedQueueName:
+    Description: Name of the SQS queue for KYC-initiated events
+    Value: !Sub "${AWS::StackName}-kyc-initiated"
+    Export:
+      Name: !Sub "${AWS::StackName}-KycInitiatedQueueName"
+
   KycInitiatedQueueUrl:
     Description: SQS queue URL for middleware/FastAPI to publish when KYC is initiated
     Value: !Ref KycInitiatedQueue
