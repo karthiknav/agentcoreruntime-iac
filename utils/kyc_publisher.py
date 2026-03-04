@@ -28,13 +28,13 @@ DUMMY_RECORD: dict[str, Any] = {
     "status": "INITIATED",
     "statusUpdatedAt": "2026-02-26T02:18:10Z",
     "files": [
-        {"type": "passport", "bucket": "kyc-docs", "key": "cases/01HR9B5J7Z6J7PD5B6PKQJ2MM4/passport.pdf"},
-        {"type": "id_card", "bucket": "kyc-docs", "key": "cases/01HR9B5J7Z6J7PD5B6PKQJ2MM4/id-front.pdf"},
+        {"type": "passport", "bucket": "kyc-agent-storage-agent-source", "key": "cases/1234/passport.pdf"},
+        {"type": "license", "bucket": "kyc-agent-storage-agent-source", "key": "cases/1234/license.pdf"}
     ],
     "identity": {
-        "fullName": "Vijay Mallya",
-        "dateOfBirth": "1990-07-13",
-        "nationality": "IN",
+        "fullName": "Alex Morgan Lee",
+        "dateOfBirth": "1990-05-12",
+        "nationality": "UTO (Mock)",
     }
 }
 
