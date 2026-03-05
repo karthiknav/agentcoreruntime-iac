@@ -244,12 +244,8 @@ Resources:
               - Sid: SqsConsume
                 Effect: Allow
                 Action:
-                  - sqs:ReceiveMessage
-                  - sqs:DeleteMessage
-                  - sqs:GetQueueAttributes
-                  - sqs:ChangeMessageVisibility
-                  - sqs:SendMessage
-                Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:*"
+                  - sqs:*
+                Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:kyc*"
               - Sid: DynamoDBAccess
                 Effect: Allow
                 Action:
