@@ -160,6 +160,11 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:BatchWriteItem
                 Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*"
+              - Sid: Textract
+                Effect: Allow
+                Action:
+                  - textract:*
+                Resource: '*'
 
   CodeBuildRole:
     Type: AWS::IAM::Role
