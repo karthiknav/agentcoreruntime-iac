@@ -248,6 +248,7 @@ Resources:
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
                   - sqs:ChangeMessageVisibility
+                  - sqs:SendMessage
                 Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:*"
               - Sid: DynamoDBAccess
                 Effect: Allow
